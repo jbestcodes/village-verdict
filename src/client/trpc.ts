@@ -4,9 +4,13 @@ import { isGameState } from '../shared/gameState';
 import { isRole } from '../shared/role';
 import type {
   CurrentPlayerRole,
+  CompletedGame,
   JoinLobbyResult,
+  LeaveLobbyResult,
   LobbyPlayer,
   LobbyState,
+  PlayerPromptState,
+  PromptPair,
   SubmitVoteResult,
   VotingPlayer,
   VotingState,
@@ -28,10 +32,21 @@ export const trpc = {
     join: {
       mutate: async (): Promise<JoinLobbyResult> => parseJoinLobbyResult(await client.mutation('lobby.join')),
     },
+    leave: {
+      mutate: async (): Promise<LeaveLobbyResult> => parseLeaveLobbyResult(await client.mutation('lobby.leave')),
+    },
+    playAgain: {
+      mutate: async (): Promise<JoinLobbyResult> => parseJoinLobbyResult(await client.mutation('lobby.playAgain')),
+    },
   },
   role: {
     current: {
       query: async (): Promise<CurrentPlayerRole> => parseCurrentPlayerRole(await client.query('role.current')),
+    },
+  },
+  prompt: {
+    current: {
+      query: async (): Promise<{ prompt: PlayerPromptState | null }> => parseCurrentPlayerPrompt(await client.query('prompt.current')),
     },
   },
   voting: {
@@ -62,24 +77,47 @@ const parseJoinLobbyResult = (value: unknown): JoinLobbyResult => {
   return reason ? { lobby, joined: value.joined, reason } : { lobby, joined: value.joined };
 };
 
+const parseLeaveLobbyResult = (value: unknown): LeaveLobbyResult => {
+  if (typeof value !== 'object' || value === null || !('lobby' in value) || !('left' in value) || typeof value.left !== 'boolean') {
+    throw new Error('Invalid leave lobby response');
+  }
+
+  if ('reason' in value && value.reason !== undefined && value.reason !== 'not_joined' && value.reason !== 'started') {
+    throw new Error('Invalid leave reason response');
+  }
+
+  const lobby = parseLobbyState(value.lobby);
+  if ('reason' in value && (value.reason === 'not_joined' || value.reason === 'started')) {
+    return { lobby, left: value.left, reason: value.reason };
+  }
+
+  return { lobby, left: value.left };
+};
+
 const parseLobbyState = (value: unknown): LobbyState => {
   if (
     typeof value !== 'object' ||
     value === null ||
     !('postId' in value) ||
+    !('gameId' in value) ||
     !('players' in value) ||
     !('gameState' in value) ||
     !('minPlayers' in value) ||
     !('maxPlayers' in value) ||
     !('currentUsername' in value) ||
     !('hasJoined' in value) ||
+    !('prompt' in value) ||
+    !('completedGame' in value) ||
     typeof value.postId !== 'string' ||
+    typeof value.gameId !== 'string' ||
     !Array.isArray(value.players) ||
     !isGameState(value.gameState) ||
     typeof value.minPlayers !== 'number' ||
     typeof value.maxPlayers !== 'number' ||
     typeof value.currentUsername !== 'string' ||
-    typeof value.hasJoined !== 'boolean'
+    typeof value.hasJoined !== 'boolean' ||
+    !(value.prompt === null || isPromptPair(value.prompt)) ||
+    !(value.completedGame === null || isCompletedGame(value.completedGame))
   ) {
     throw new Error('Invalid lobby response');
   }
@@ -90,13 +128,97 @@ const parseLobbyState = (value: unknown): LobbyState => {
 
   return {
     postId: value.postId,
+    gameId: value.gameId,
     players: value.players,
     gameState: value.gameState,
     minPlayers: value.minPlayers,
     maxPlayers: value.maxPlayers,
     currentUsername: value.currentUsername,
     hasJoined: value.hasJoined,
+    prompt: value.prompt,
+    completedGame: value.completedGame,
   };
+};
+
+const isCompletedGame = (value: unknown): value is CompletedGame => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  return (
+    'gameId' in value &&
+    'eliminatedUsername' in value &&
+    'eliminatedRole' in value &&
+    'winningSide' in value &&
+    'finishedAt' in value &&
+    typeof value.gameId === 'string' &&
+    (typeof value.eliminatedUsername === 'string' || value.eliminatedUsername === null) &&
+    (isRole(value.eliminatedRole) || value.eliminatedRole === null) &&
+    (value.winningSide === 'VILLAGERS' || value.winningSide === 'IMPOSTOR') &&
+    typeof value.finishedAt === 'string'
+  );
+};
+
+const parseCurrentPlayerPrompt = (value: unknown): { prompt: PlayerPromptState | null } => {
+  if (typeof value !== 'object' || value === null || !('prompt' in value)) {
+    throw new Error('Invalid current prompt response');
+  }
+
+  if (value.prompt === null) {
+    return { prompt: null };
+  }
+
+  if (isPlayerPromptState(value.prompt)) {
+    return { prompt: value.prompt };
+  }
+
+  throw new Error('Invalid current prompt response');
+};
+
+const isPromptPair = (value: unknown): value is PromptPair => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  return (
+    'id' in value &&
+    'firstWord' in value &&
+    'secondWord' in value &&
+    'source' in value &&
+    'category' in value &&
+    'createdAt' in value &&
+    typeof value.id === 'string' &&
+    typeof value.firstWord === 'string' &&
+    typeof value.secondWord === 'string' &&
+    (value.source === 'CURATED' || value.source === 'USER_SUBMITTED' || value.source === 'MODERATOR_APPROVED' || value.source === 'AI_GENERATED') &&
+    (typeof value.category === 'string' || value.category === null) &&
+    typeof value.createdAt === 'string'
+  );
+};
+
+const isPlayerPromptState = (value: unknown): value is PlayerPromptState => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  return (
+    'promptId' in value &&
+    'firstWord' in value &&
+    'secondWord' in value &&
+    'secretWord' in value &&
+    'isImpostor' in value &&
+    'source' in value &&
+    'category' in value &&
+    'createdAt' in value &&
+    typeof value.promptId === 'string' &&
+    typeof value.firstWord === 'string' &&
+    typeof value.secondWord === 'string' &&
+    typeof value.secretWord === 'string' &&
+    typeof value.isImpostor === 'boolean' &&
+    (value.source === 'CURATED' || value.source === 'USER_SUBMITTED' || value.source === 'MODERATOR_APPROVED' || value.source === 'AI_GENERATED') &&
+    (typeof value.category === 'string' || value.category === null) &&
+    typeof value.createdAt === 'string'
+  );
 };
 
 const parseJoinReason = (value: object): JoinLobbyResult['reason'] => {
@@ -153,12 +275,14 @@ const parseVotingState = (value: unknown): VotingState => {
     !('selectedTarget' in value) ||
     !('votingEndsAt' in value) ||
     !('eliminatedUsername' in value) ||
+    !('eliminatedRole' in value) ||
     !('canVote' in value) ||
     !isGameState(value.gameState) ||
     !Array.isArray(value.alivePlayers) ||
     !(typeof value.selectedTarget === 'string' || value.selectedTarget === null) ||
     !(typeof value.votingEndsAt === 'string' || value.votingEndsAt === null) ||
     !(typeof value.eliminatedUsername === 'string' || value.eliminatedUsername === null) ||
+    !(isRole(value.eliminatedRole) || value.eliminatedRole === null) ||
     typeof value.canVote !== 'boolean'
   ) {
     throw new Error('Invalid voting state response');
@@ -174,6 +298,7 @@ const parseVotingState = (value: unknown): VotingState => {
     selectedTarget: value.selectedTarget,
     votingEndsAt: value.votingEndsAt,
     eliminatedUsername: value.eliminatedUsername,
+    eliminatedRole: value.eliminatedRole,
     canVote: value.canVote,
   };
 };

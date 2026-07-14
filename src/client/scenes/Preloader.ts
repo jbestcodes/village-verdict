@@ -1,4 +1,5 @@
 import { Scene } from 'phaser';
+import { fadeToScene } from '../animations/uiAnimations';
 
 export class Preloader extends Scene {
   constructor() {
@@ -34,6 +35,6 @@ export class Preloader extends Scene {
     //  For example, you can define global animations here, so we can use them in other scenes.
 
     //  Move to the MainMenu. You could also swap this for a Scene Transition, such as a camera fade.
-    this.scene.start('MainMenu');
+    fadeToScene(this, 'MainMenu');
   }
 }
