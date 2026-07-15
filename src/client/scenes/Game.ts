@@ -51,14 +51,20 @@ export class Game extends Scene {
 
   private async loadGameState(): Promise<void> {
     try {
-      const lobby = await trpc.lobby.get.query();
-      if (lobby.completedGame) return this.startGameOver(lobby.completedGame);
-      const [prompt, voting] = await Promise.all([trpc.prompt.current.query(), trpc.voting.getVotingState.query()]);
       const currentLobby = await trpc.lobby.get.query();
       if (currentLobby.completedGame) return this.startGameOver(currentLobby.completedGame);
       this.lobby = currentLobby;
-      this.prompt = prompt.prompt;
-      this.voting = voting.gameState === currentLobby.gameState ? voting : null;
+
+      if (currentLobby.gameState === 'SECRET_WORD' || currentLobby.gameState === 'DISCUSSION') {
+        const prompt = await trpc.prompt.current.query();
+        this.prompt = prompt.prompt ?? this.prompt;
+      }
+
+      if (currentLobby.gameState === 'VOTING' || currentLobby.gameState === 'RESULTS') {
+        const voting = await trpc.voting.getVotingState.query();
+        this.voting = voting.gameState === currentLobby.gameState ? voting : null;
+      }
+
       this.render();
     } catch (error) { console.error('Failed to load game:', error); }
   }
@@ -92,7 +98,7 @@ export class Game extends Scene {
   }
 
   private renderReady(): void {
-    this.show('Round Ready', 'Roles and secret words are being assigned.');
+    this.show('Round Starting', 'Roles and secret words are being assigned...');
   }
 
   private renderSecretWord(): void {

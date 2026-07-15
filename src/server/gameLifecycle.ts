@@ -3,7 +3,7 @@ import type { GameState } from '../shared/gameState';
 
 export const getNextGameState = (currentState: GameState, playerCount: number): GameState => {
   if (currentState === 'WAITING') {
-    return playerCount >= MIN_PLAYERS ? 'READY' : 'WAITING';
+    return playerCount >= MIN_PLAYERS ? 'SECRET_WORD' : 'WAITING';
   }
   if (currentState === 'READY') {
     return 'SECRET_WORD';

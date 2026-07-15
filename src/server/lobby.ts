@@ -1,7 +1,7 @@
 import { context, redis, reddit } from '@devvit/web/server';
-import { MAX_PLAYERS, MIN_PLAYERS } from '../shared/gameConfig';
+import { DISCUSSION_DURATION_MS, MAX_PLAYERS, MIN_PLAYERS, RESULTS_DURATION_MS, SECRET_WORD_DURATION_MS, VOTING_DURATION_MS, WAITING_DURATION_MS } from '../shared/gameConfig';
 import { isGameState, type GameState } from '../shared/gameState';
-import type { CompletedGame, JoinLobbyResult, LeaveLobbyResult, LobbyPlayer, LobbyState, WinningSide } from '../shared/lobby';
+import type { CompletedGame, JoinLobbyResult, LeaveLobbyResult, LobbyPlayer, LobbyState } from '../shared/lobby';
 import type { PlayerSecretWord } from '../shared/prompt';
 import { isRole, type CurrentPlayerRole, type Role } from '../shared/role';
 import type { SubmitVoteResult, VotingPlayer, VotingState } from '../shared/voting';
@@ -20,15 +20,9 @@ const votingResultKey = (postId: string, gameId: string): string => gameKey(post
 const archiveKey = (postId: string, gameId: string): string => gameKey(postId, gameId, 'archive');
 const completedGameKey = (postId: string, username: string): string => `village-verdict:completed-game:${postId}:${username}`;
 
-const SECRET_WORD_DURATION_MS = 5_000;
-const DISCUSSION_DURATION_MS = 60_000;
-const VOTING_DURATION_MS = 60_000;
-const RESULTS_DURATION_MS = 10_000;
-const WAITING_DURATION_MS = 60_000;
-
 type GameContext = { postId: string; gameId: string; players: LobbyPlayer[]; gameState: GameState };
 type StoredLobby = { players: LobbyPlayer[] };
-type PhaseTimer = { waitingEndsAt: string | null; secretWordEndsAt: string | null; discussionEndsAt: string | null; votingEndsAt: string | null; resultsEndsAt: string | null };
+type PhaseTimer = { waitingEndsAt: string | null; readyEndsAt: string | null; secretWordEndsAt: string | null; discussionEndsAt: string | null; votingEndsAt: string | null; resultsEndsAt: string | null };
 type VotingResult = { eliminatedUsername: string | null; talliedAt: string };
 type ArchivedGame = CompletedGame & { players: LobbyPlayer[]; roles: Record<string, Role>; votes: Record<string, string>; timer: PhaseTimer };
 
@@ -129,24 +123,29 @@ const createFreshGame = async (postId: string): Promise<GameContext> => {
 };
 
 const syncGameState = async (game: GameContext): Promise<GameContext> => {
+  if (game.gameState === 'READY') return syncReadyState(game);
   if (game.gameState === 'SECRET_WORD') return syncSecretWordState(game);
   if (game.gameState === 'DISCUSSION') return syncDiscussionState(game);
   if (game.gameState === 'VOTING') return syncVotingState(game);
   if (game.gameState === 'RESULTS') return syncResultsState(game);
-  if (game.gameState === 'PLAY_AGAIN') return finishGame(game);
+  if (game.gameState === 'PLAY_AGAIN') return game;
   const gameState = getNextGameState(game.gameState, game.players.length);
   if (gameState === game.gameState) {
     if (gameState === 'WAITING') await ensureWaitingTimer(game);
     return game;
   }
   const nextGame = { ...game, gameState };
-  if (gameState === 'READY') {
-    await Promise.all([assignRoles(nextGame), getPromptPairForGame(game.postId, game.gameId), initializeAlivePlayers(nextGame)]);
-  }
   if (gameState === 'SECRET_WORD') {
-    await initializeSecretWordTimer(nextGame);
+    await Promise.all([assignRoles(nextGame), getPromptPairForGame(game.postId, game.gameId), initializeAlivePlayers(nextGame), initializeSecretWordTimer(nextGame)]);
   }
-  await Promise.all([writeGameState(nextGame), gameState === 'WAITING' ? ensureWaitingTimer(nextGame) : clearWaitingTimer(nextGame)]);
+  await Promise.all([writeGameState(nextGame), clearWaitingTimer(nextGame)]);
+  return nextGame;
+};
+
+const syncReadyState = async (game: GameContext): Promise<GameContext> => {
+  const nextGame = { ...game, gameState: 'SECRET_WORD' as const };
+  await Promise.all([assignRoles(nextGame), getPromptPairForGame(game.postId, game.gameId), initializeAlivePlayers(nextGame), initializeSecretWordTimer(nextGame)]);
+  await writeGameState(nextGame);
   return nextGame;
 };
 
@@ -183,8 +182,10 @@ const syncVotingState = async (game: GameContext): Promise<GameContext> => {
     return game;
   }
   if (new Date(timer.votingEndsAt).getTime() > Date.now()) return game;
-  await tallyVotes(game);
-  return finishGame(game);
+  const result = await tallyVotes(game);
+  const nextGame = { ...game, gameState: 'RESULTS' as const };
+  await Promise.all([writeGameState(nextGame), startResults(game, result)]);
+  return nextGame;
 };
 
 const syncResultsState = async (game: GameContext): Promise<GameContext> => {
@@ -195,27 +196,9 @@ const syncResultsState = async (game: GameContext): Promise<GameContext> => {
     return game;
   }
   if (new Date(timer.resultsEndsAt).getTime() > Date.now()) return game;
-  return finishGame(game);
-};
-
-const finishGame = async (game: GameContext): Promise<GameContext> => {
-  const result = await tallyVotes(game);
-  const [roles, votes, timer, promptPair] = await Promise.all([readRoles(game), readVotes(game), readPhaseTimer(game), getPromptPairForGame(game.postId, game.gameId)]);
-  const differentWordUsername = game.players.find((player) => roles[player.username] === 'IMPOSTOR')?.username;
-  if (!differentWordUsername) throw new Error('Missing different-word player');
-  const winningSide: WinningSide = result.eliminatedUsername === differentWordUsername ? 'VILLAGERS' : 'IMPOSTOR';
-  const completedGame: CompletedGame = { gameId: game.gameId, majorityWord: promptPair.villagerWord, differentWord: promptPair.impostorWord, differentWordUsername, winningSide, finishedAt: new Date().toISOString() };
-  const archive: ArchivedGame = { ...completedGame, players: game.players, roles, votes, timer };
-  const freshGame: GameContext = { postId: game.postId, gameId: `game-${globalThis.crypto.randomUUID()}`, players: [], gameState: 'WAITING' };
-  await writeGameState({ ...game, gameState: 'PLAY_AGAIN' });
-  await Promise.all([
-    redis.set(archiveKey(game.postId, game.gameId), JSON.stringify(archive)),
-    redis.set(activeGameKey(game.postId), freshGame.gameId),
-    writeStoredLobby(freshGame),
-    writeGameState(freshGame),
-    ...game.players.map((player) => redis.set(completedGameKey(game.postId, player.username), game.gameId)),
-  ]);
-  return freshGame;
+  const nextGame = { ...game, gameState: 'PLAY_AGAIN' as const };
+  await writeGameState(nextGame);
+  return nextGame;
 };
 
 const assignRoles = async (game: GameContext): Promise<void> => {
@@ -236,13 +219,13 @@ const initializeAlivePlayers = async (game: GameContext): Promise<void> => {
 const initializeSecretWordTimer = async (game: GameContext): Promise<void> => {
   const timer = await readPhaseTimer(game);
   if (timer.secretWordEndsAt) return;
-  await writePhaseTimer(game, { waitingEndsAt: null, secretWordEndsAt: new Date(Date.now() + SECRET_WORD_DURATION_MS).toISOString(), discussionEndsAt: null, votingEndsAt: null, resultsEndsAt: null });
+  await writePhaseTimer(game, { waitingEndsAt: null, readyEndsAt: null, secretWordEndsAt: new Date(Date.now() + SECRET_WORD_DURATION_MS).toISOString(), discussionEndsAt: null, votingEndsAt: null, resultsEndsAt: null });
 };
 
 const startDiscussion = async (game: GameContext): Promise<void> => {
   const timer = await readPhaseTimer(game);
   if (timer.discussionEndsAt) return;
-  await writePhaseTimer(game, { ...timer, secretWordEndsAt: null, discussionEndsAt: new Date(Date.now() + DISCUSSION_DURATION_MS).toISOString() });
+  await writePhaseTimer(game, { ...timer, readyEndsAt: null, secretWordEndsAt: null, discussionEndsAt: new Date(Date.now() + DISCUSSION_DURATION_MS).toISOString() });
 };
 
 const ensureWaitingTimer = async (game: GameContext): Promise<void> => {
@@ -266,7 +249,7 @@ const clearWaitingTimer = async (game: GameContext): Promise<void> => {
 
 const startVoting = async (game: GameContext): Promise<void> => {
   const [timer, alivePlayers] = await Promise.all([readPhaseTimer(game), readAlivePlayers(game)]);
-  await Promise.all([writeAlivePlayers(game, alivePlayers.length > 0 ? alivePlayers : game.players.map((player) => player.username)), writePhaseTimer(game, { ...timer, waitingEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, votingEndsAt: timer.votingEndsAt ?? new Date(Date.now() + VOTING_DURATION_MS).toISOString(), resultsEndsAt: null })]);
+  await Promise.all([writeAlivePlayers(game, alivePlayers.length > 0 ? alivePlayers : game.players.map((player) => player.username)), writePhaseTimer(game, { ...timer, waitingEndsAt: null, readyEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, votingEndsAt: timer.votingEndsAt ?? new Date(Date.now() + VOTING_DURATION_MS).toISOString(), resultsEndsAt: null })]);
 };
 
 const startResults = async (game: GameContext, result: VotingResult): Promise<void> => {
@@ -274,7 +257,7 @@ const startResults = async (game: GameContext, result: VotingResult): Promise<vo
   if (timer.resultsEndsAt) return;
   await Promise.all([
     writeVotingResult(game, result),
-    writePhaseTimer(game, { ...timer, waitingEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, resultsEndsAt: new Date(Date.now() + RESULTS_DURATION_MS).toISOString() }),
+    writePhaseTimer(game, { ...timer, waitingEndsAt: null, readyEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, votingEndsAt: null, resultsEndsAt: new Date(Date.now() + RESULTS_DURATION_MS).toISOString() }),
   ]);
 };
 
@@ -294,8 +277,17 @@ const tallyVotes = async (game: GameContext): Promise<VotingResult> => {
 
 const buildVotingState = async (game: GameContext, currentUsername: string): Promise<VotingState> => {
   const [alivePlayerNames, votes, timer, result] = await Promise.all([readAlivePlayers(game), readVotes(game), readPhaseTimer(game), readVotingResult(game)]);
-  const alivePlayers = alivePlayerNames.length > 0 ? alivePlayerNames : game.players.map((player) => player.username);
-  return { gameState: game.gameState, alivePlayers: alivePlayers.map((username): VotingPlayer => ({ username, isCurrentUser: username === currentUsername })), selectedTarget: votes[currentUsername] ?? null, votingEndsAt: game.gameState === 'VOTING' ? timer.votingEndsAt : null, resultsEndsAt: game.gameState === 'RESULTS' ? timer.resultsEndsAt : null, eliminatedUsername: result?.eliminatedUsername ?? null, canVote: game.gameState === 'VOTING' && alivePlayers.includes(currentUsername) };
+  const lobbyPlayers = game.players.map((player) => player.username);
+  const canVote = game.gameState === 'VOTING' && alivePlayerNames.includes(currentUsername);
+  return {
+    gameState: game.gameState,
+    alivePlayers: lobbyPlayers.map((username): VotingPlayer => ({ username, isCurrentUser: username === currentUsername })),
+    selectedTarget: votes[currentUsername] ?? null,
+    votingEndsAt: game.gameState === 'VOTING' ? timer.votingEndsAt : null,
+    resultsEndsAt: game.gameState === 'RESULTS' ? timer.resultsEndsAt : null,
+    eliminatedUsername: result?.eliminatedUsername ?? null,
+    canVote,
+  };
 };
 
 const toLobbyState = async (game: GameContext, username: string): Promise<LobbyState> => {
@@ -333,13 +325,13 @@ const hasCompleteRoleSet = (roles: Record<string, Role>, players: LobbyPlayer[])
 const parseStoredLobby = (value: string | null | undefined): StoredLobby => { const parsed = parseJson(value); return isStoredLobby(parsed) ? parsed : { players: [] }; };
 const parseRoles = (value: string | null | undefined): Record<string, Role> => { const parsed = parseJson(value); return isStoredRoles(parsed) ? parsed : {}; };
 const parseStringArray = (value: string | null | undefined, fallback: string[]): string[] => { const parsed = parseJson(value); return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : fallback; };
-const parsePhaseTimer = (value: string | null | undefined): PhaseTimer => { const parsed = parseJson(value); return isPhaseTimer(parsed) ? parsed : { waitingEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, votingEndsAt: null, resultsEndsAt: null }; };
+const parsePhaseTimer = (value: string | null | undefined): PhaseTimer => { const parsed = parseJson(value); return isPhaseTimer(parsed) ? parsed : { waitingEndsAt: null, readyEndsAt: null, secretWordEndsAt: null, discussionEndsAt: null, votingEndsAt: null, resultsEndsAt: null }; };
 const parseVotes = (value: string | null | undefined): Record<string, string> => { const parsed = parseJson(value); return isStoredVotes(parsed) ? parsed : {}; };
 const parseVotingResult = (value: string | null | undefined): VotingResult | null => { const parsed = parseJson(value); return isVotingResult(parsed) ? parsed : null; };
 const parseJson = (value: string | null | undefined): unknown => { if (!value) return null; try { return JSON.parse(value); } catch { return null; } };
 const isStoredLobby = (value: unknown): value is StoredLobby => typeof value === 'object' && value !== null && 'players' in value && Array.isArray(value.players) && value.players.every((player) => typeof player === 'object' && player !== null && 'username' in player && 'joinedAt' in player && typeof player.username === 'string' && typeof player.joinedAt === 'string');
 const isStoredRoles = (value: unknown): value is Record<string, Role> => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every(isRole);
-const isPhaseTimer = (value: unknown): value is PhaseTimer => typeof value === 'object' && value !== null && 'waitingEndsAt' in value && 'secretWordEndsAt' in value && 'discussionEndsAt' in value && 'votingEndsAt' in value && 'resultsEndsAt' in value && (typeof value.waitingEndsAt === 'string' || value.waitingEndsAt === null) && (typeof value.secretWordEndsAt === 'string' || value.secretWordEndsAt === null) && (typeof value.discussionEndsAt === 'string' || value.discussionEndsAt === null) && (typeof value.votingEndsAt === 'string' || value.votingEndsAt === null) && (typeof value.resultsEndsAt === 'string' || value.resultsEndsAt === null);
+const isPhaseTimer = (value: unknown): value is PhaseTimer => typeof value === 'object' && value !== null && 'waitingEndsAt' in value && 'readyEndsAt' in value && 'secretWordEndsAt' in value && 'discussionEndsAt' in value && 'votingEndsAt' in value && 'resultsEndsAt' in value && (typeof value.waitingEndsAt === 'string' || value.waitingEndsAt === null) && (typeof value.readyEndsAt === 'string' || value.readyEndsAt === null) && (typeof value.secretWordEndsAt === 'string' || value.secretWordEndsAt === null) && (typeof value.discussionEndsAt === 'string' || value.discussionEndsAt === null) && (typeof value.votingEndsAt === 'string' || value.votingEndsAt === null) && (typeof value.resultsEndsAt === 'string' || value.resultsEndsAt === null);
 const isStoredVotes = (value: unknown): value is Record<string, string> => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every((entry) => typeof entry === 'string');
 const isVotingResult = (value: unknown): value is VotingResult => typeof value === 'object' && value !== null && 'eliminatedUsername' in value && 'talliedAt' in value && (typeof value.eliminatedUsername === 'string' || value.eliminatedUsername === null) && typeof value.talliedAt === 'string';
 const isArchivedGame = (value: unknown): value is ArchivedGame => typeof value === 'object' && value !== null && 'gameId' in value && 'majorityWord' in value && 'differentWord' in value && 'differentWordUsername' in value && 'winningSide' in value && 'finishedAt' in value && typeof value.gameId === 'string' && typeof value.majorityWord === 'string' && typeof value.differentWord === 'string' && typeof value.differentWordUsername === 'string' && (value.winningSide === 'VILLAGERS' || value.winningSide === 'IMPOSTOR') && typeof value.finishedAt === 'string';
