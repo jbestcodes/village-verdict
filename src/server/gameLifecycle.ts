@@ -5,9 +5,20 @@ export const getNextGameState = (currentState: GameState, playerCount: number): 
   if (currentState === 'WAITING') {
     return playerCount >= MIN_PLAYERS ? 'READY' : 'WAITING';
   }
-
   if (currentState === 'READY') {
-    return playerCount >= MIN_PLAYERS ? 'IN_PROGRESS' : 'WAITING';
+    return 'SECRET_WORD';
+  }
+  if (currentState === 'SECRET_WORD') {
+    return 'DISCUSSION';
+  }
+  if (currentState === 'DISCUSSION') {
+    return 'VOTING';
+  }
+  if (currentState === 'VOTING') {
+    return 'RESULTS';
+  }
+  if (currentState === 'RESULTS') {
+    return 'PLAY_AGAIN';
   }
 
   return currentState;

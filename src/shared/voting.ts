@@ -1,5 +1,4 @@
 import type { GameState } from './gameState';
-import type { Role } from './role';
 
 export type VotingPlayer = {
   username: string;
@@ -13,7 +12,6 @@ export type VotingState = {
   votingEndsAt: string | null;
   resultsEndsAt: string | null;
   eliminatedUsername: string | null;
-  eliminatedRole: Role | null;
   canVote: boolean;
 };
 

@@ -1,5 +1,5 @@
 import { TRPCError, initTRPC } from '@trpc/server';
-import { getCurrentLobby, getCurrentPlayerPrompt, getCurrentPlayerRole, getVotingState, joinCurrentLobby, leaveCurrentLobby, playAgain, submitCurrentVote } from './lobby';
+import { continueWaiting, getCurrentLobby, getCurrentPlayerPrompt, getCurrentPlayerRole, getVotingState, joinCurrentLobby, leaveCurrentLobby, playAgain, submitCurrentVote } from './lobby';
 
 const t = initTRPC.create();
 
@@ -18,6 +18,7 @@ export const appRouter = t.router({
     get: t.procedure.query(() => getCurrentLobby()),
     join: t.procedure.mutation(() => joinCurrentLobby()),
     leave: t.procedure.mutation(() => leaveCurrentLobby()),
+    continueWaiting: t.procedure.mutation(() => continueWaiting()),
     playAgain: t.procedure.mutation(() => playAgain()),
   }),
   role: t.router({

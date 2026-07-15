@@ -57,10 +57,8 @@ export class GameOver extends Scene {
 
   private getSummary(): string {
     if (!this.completedGame) return 'The game has finished.';
-    const eliminated = this.completedGame.eliminatedUsername ? `Eliminated player: u/${this.completedGame.eliminatedUsername}` : 'No player was eliminated.';
-    const role = this.completedGame.eliminatedRole ? `Role: ${this.completedGame.eliminatedRole === 'IMPOSTOR' ? 'Impostor' : 'Villager'}` : 'Role: not revealed';
-    const winner = this.completedGame.winningSide === 'VILLAGERS' ? 'Villagers win!' : 'Impostor wins!';
-    return `${eliminated}\n${role}\n\n${winner}\n\nGame ID: ${this.completedGame.gameId}`;
+    const winner = this.completedGame.winningSide === 'VILLAGERS' ? 'Villagers' : 'Different-word player';
+    return `Majority Word:\n${this.completedGame.majorityWord}\n\nDifferent Word:\n${this.completedGame.differentWord}\n\nDifferent-word player:\nu/${this.completedGame.differentWordUsername}\n\nWinner:\n${winner}`;
   }
 
   private getScaleFactor(): number {
@@ -69,10 +67,10 @@ export class GameOver extends Scene {
 
   private updateLayout(width: number, height: number): void {
     this.cameras.resize(width, height);
-    const scale = this.getScaleFactor();
+    const scale = Math.max(this.getScaleFactor(), 0.72);
     this.background?.setDisplaySize(width, height);
-    this.titleText?.setPosition(width / 2, height * 0.26).setScale(scale);
-    this.summaryText?.setPosition(width / 2, height * 0.52).setScale(scale).setWordWrapWidth(Math.min(width * 0.82, 720));
-    this.playAgainButton?.setPosition(width / 2, height * 0.79).setScale(scale);
+    this.titleText?.setPosition(width / 2, height * 0.16).setScale(scale);
+    this.summaryText?.setPosition(width / 2, height * 0.51).setScale(scale).setWordWrapWidth(Math.min(width * 0.86, 720));
+    this.playAgainButton?.setPosition(width / 2, height - 58).setScale(scale);
   }
 }

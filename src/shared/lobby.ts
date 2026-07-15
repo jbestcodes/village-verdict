@@ -1,5 +1,4 @@
 import type { GameState } from './gameState';
-import type { Role } from './role';
 
 export type LobbyPlayer = {
   username: string;
@@ -15,6 +14,9 @@ export type LobbyState = {
   maxPlayers: number;
   currentUsername: string;
   hasJoined: boolean;
+  waitingEndsAt: string | null;
+  wordRevealEndsAt: string | null;
+  discussionEndsAt: string | null;
   completedGame: CompletedGame | null;
 };
 
@@ -22,8 +24,9 @@ export type WinningSide = 'VILLAGERS' | 'IMPOSTOR';
 
 export type CompletedGame = {
   gameId: string;
-  eliminatedUsername: string | null;
-  eliminatedRole: Role | null;
+  majorityWord: string;
+  differentWord: string;
+  differentWordUsername: string;
   winningSide: WinningSide;
   finishedAt: string;
 };

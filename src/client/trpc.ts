@@ -34,6 +34,9 @@ export const trpc = {
     leave: {
       mutate: async (): Promise<LeaveLobbyResult> => parseLeaveLobbyResult(await client.mutation('lobby.leave')),
     },
+    continueWaiting: {
+      mutate: async (): Promise<LobbyState> => parseLobbyState(await client.mutation('lobby.continueWaiting')),
+    },
     playAgain: {
       mutate: async (): Promise<JoinLobbyResult> => parseJoinLobbyResult(await client.mutation('lobby.playAgain')),
     },
@@ -105,6 +108,9 @@ const parseLobbyState = (value: unknown): LobbyState => {
     !('maxPlayers' in value) ||
     !('currentUsername' in value) ||
     !('hasJoined' in value) ||
+    !('waitingEndsAt' in value) ||
+    !('wordRevealEndsAt' in value) ||
+    !('discussionEndsAt' in value) ||
     !('completedGame' in value) ||
     typeof value.postId !== 'string' ||
     typeof value.gameId !== 'string' ||
@@ -114,6 +120,9 @@ const parseLobbyState = (value: unknown): LobbyState => {
     typeof value.maxPlayers !== 'number' ||
     typeof value.currentUsername !== 'string' ||
     typeof value.hasJoined !== 'boolean' ||
+    !(typeof value.waitingEndsAt === 'string' || value.waitingEndsAt === null) ||
+    !(typeof value.wordRevealEndsAt === 'string' || value.wordRevealEndsAt === null) ||
+    !(typeof value.discussionEndsAt === 'string' || value.discussionEndsAt === null) ||
     !(value.completedGame === null || isCompletedGame(value.completedGame))
   ) {
     throw new Error('Invalid lobby response');
@@ -132,6 +141,9 @@ const parseLobbyState = (value: unknown): LobbyState => {
     maxPlayers: value.maxPlayers,
     currentUsername: value.currentUsername,
     hasJoined: value.hasJoined,
+    waitingEndsAt: value.waitingEndsAt,
+    wordRevealEndsAt: value.wordRevealEndsAt,
+    discussionEndsAt: value.discussionEndsAt,
     completedGame: value.completedGame,
   };
 };
@@ -143,13 +155,15 @@ const isCompletedGame = (value: unknown): value is CompletedGame => {
 
   return (
     'gameId' in value &&
-    'eliminatedUsername' in value &&
-    'eliminatedRole' in value &&
+    'majorityWord' in value &&
+    'differentWord' in value &&
+    'differentWordUsername' in value &&
     'winningSide' in value &&
     'finishedAt' in value &&
     typeof value.gameId === 'string' &&
-    (typeof value.eliminatedUsername === 'string' || value.eliminatedUsername === null) &&
-    (isRole(value.eliminatedRole) || value.eliminatedRole === null) &&
+    typeof value.majorityWord === 'string' &&
+    typeof value.differentWord === 'string' &&
+    typeof value.differentWordUsername === 'string' &&
     (value.winningSide === 'VILLAGERS' || value.winningSide === 'IMPOSTOR') &&
     typeof value.finishedAt === 'string'
   );
@@ -237,7 +251,6 @@ const parseVotingState = (value: unknown): VotingState => {
     !('votingEndsAt' in value) ||
     !('resultsEndsAt' in value) ||
     !('eliminatedUsername' in value) ||
-    !('eliminatedRole' in value) ||
     !('canVote' in value) ||
     !isGameState(value.gameState) ||
     !Array.isArray(value.alivePlayers) ||
@@ -245,7 +258,6 @@ const parseVotingState = (value: unknown): VotingState => {
     !(typeof value.votingEndsAt === 'string' || value.votingEndsAt === null) ||
     !(typeof value.resultsEndsAt === 'string' || value.resultsEndsAt === null) ||
     !(typeof value.eliminatedUsername === 'string' || value.eliminatedUsername === null) ||
-    !(isRole(value.eliminatedRole) || value.eliminatedRole === null) ||
     typeof value.canVote !== 'boolean'
   ) {
     throw new Error('Invalid voting state response');
@@ -262,7 +274,6 @@ const parseVotingState = (value: unknown): VotingState => {
     votingEndsAt: value.votingEndsAt,
     resultsEndsAt: value.resultsEndsAt,
     eliminatedUsername: value.eliminatedUsername,
-    eliminatedRole: value.eliminatedRole,
     canVote: value.canVote,
   };
 };
