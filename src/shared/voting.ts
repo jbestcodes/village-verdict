@@ -11,6 +11,7 @@ export type VotingState = {
   alivePlayers: VotingPlayer[];
   selectedTarget: string | null;
   votingEndsAt: string | null;
+  resultsEndsAt: string | null;
   eliminatedUsername: string | null;
   eliminatedRole: Role | null;
   canVote: boolean;

@@ -1,3 +1,24 @@
+# Village Verdict
+
+Village Verdict is a Reddit-native social deduction game built on Devvit.
+
+How it works:
+- Players join a lobby.
+- Everyone receives a secret word.
+- One player receives a similar but different word.
+- Players discuss in the Reddit comments.
+- Everyone votes.
+- Results are revealed.
+- A new round begins automatically.
+
+Tech Stack:
+- Devvit
+- Phaser
+- TypeScript
+- Hono
+- tRPC
+- Redis
+
 ## Devvit Phaser Starter
 
 A starter to build web applications on Reddit's developer platform

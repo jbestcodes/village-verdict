@@ -1,7 +1,7 @@
 import { navigateTo, showToast } from '@devvit/web/client';
 import { Scene } from 'phaser';
 import * as Phaser from 'phaser';
-import type { CompletedGame, LobbyState, PlayerPromptState, Role, SubmitVoteResult, VotingPlayer, VotingState } from '../../shared/api';
+import type { CompletedGame, LobbyState, PlayerSecretWord, Role, SubmitVoteResult, VotingPlayer, VotingState } from '../../shared/api';
 import { addAmbientDrift, addButtonFeedback, fadeSceneIn } from '../animations/uiAnimations';
 import { trpc } from '../trpc';
 
@@ -26,7 +26,7 @@ export class Game extends Scene {
   private refreshEvent: Phaser.Time.TimerEvent | null = null;
   private lobby: LobbyState | null = null;
   private currentRole: Role | null = null;
-  private currentPrompt: PlayerPromptState | null = null;
+  private currentPrompt: PlayerSecretWord | null = null;
   private votingState: VotingState | null = null;
   private displayedGameState: LobbyState['gameState'] | null = null;
   private displayedPlayerCount = -1;
@@ -184,10 +184,10 @@ export class Game extends Scene {
     this.statusText?.setText(`State: ${gameState}\n${waitingMessage}\nYou are u/${currentUsername}`);
     this.gameIdText?.setText(`Game ID: ${this.lobby.gameId}`);
     this.updatePlayerCount(players.length, maxPlayers);
-    const isDiscussionPhase = gameState === 'IN_PROGRESS' && hasJoined && this.lobby.prompt !== null;
+    const isDiscussionPhase = gameState === 'IN_PROGRESS' && hasJoined && this.currentPrompt !== null;
     this.roleText?.setText(this.getRoleMessage(gameState, hasJoined));
     this.promptText?.setText(isDiscussionPhase ? this.getPromptMessage() : '').setVisible(isDiscussionPhase);
-    this.promptHintText?.setText(isDiscussionPhase ? 'Describe your word without saying it directly.' : '').setVisible(isDiscussionPhase);
+    this.promptHintText?.setText(isDiscussionPhase ? 'Describe your word without saying it directly.\nUse the Reddit comments to convince other players.' : '').setVisible(isDiscussionPhase);
     this.discussionButton?.setVisible(isDiscussionPhase);
     this.playersText?.setVisible(!isDiscussionPhase);
     if (this.isVotingVisible()) {
@@ -201,6 +201,8 @@ export class Game extends Scene {
     this.leaveButton?.setText('Leave Game').setVisible(canLeave).setAlpha(canLeave ? 1 : 0);
     this.renderVotingControls();
     if (gameState === 'VOTING') this.playVotingEntrance();
+    if (gameState === 'RESULTS') this.resultsText?.setText(this.getResultsSummary()).setVisible(true);
+    if (gameState !== 'RESULTS') this.resultsText?.setVisible(false);
     if (this.currentRole && this.currentRole !== this.revealedRole && hasJoined) this.playRoleReveal();
   }
 
@@ -263,18 +265,10 @@ export class Game extends Scene {
     this.voteButtons.forEach((button) => this.tweens.add({ targets: button, alpha: 0, x: button.x - 20, duration: 180, ease: 'Cubic.In' }));
     this.time.delayedCall(210, () => {
       this.renderLobby(true);
-      const eliminatedUsername = this.votingState?.eliminatedUsername;
-      const eliminatedRole = this.votingState?.eliminatedRole;
       if (!this.resultsText) return;
-      this.resultsText.setText(eliminatedUsername ? `u/${eliminatedUsername} was eliminated` : 'No player was eliminated.').setVisible(true).setAlpha(0).setScale(0.7 * this.getScaleFactor());
+      this.resultsText.setText(this.getResultsSummary()).setVisible(true).setAlpha(0).setScale(0.7 * this.getScaleFactor());
       this.cameras.main.shake(260, 0.008);
       this.tweens.add({ targets: this.resultsText, alpha: 1, scaleX: this.getScaleFactor(), scaleY: this.getScaleFactor(), duration: 360, ease: 'Back.Out' });
-      if (eliminatedUsername && eliminatedRole) {
-        this.time.delayedCall(1000, () => {
-          this.resultsText?.setText(`u/${eliminatedUsername} was ${eliminatedRole === 'IMPOSTOR' ? 'the Impostor' : 'a Villager'}`);
-          this.tweens.add({ targets: this.resultsText, alpha: { from: 0, to: 1 }, scaleX: { from: 0.8 * this.getScaleFactor(), to: this.getScaleFactor() }, scaleY: { from: 0.8 * this.getScaleFactor(), to: this.getScaleFactor() }, duration: 360, ease: 'Back.Out' });
-        });
-      }
     });
   }
 
@@ -294,7 +288,7 @@ export class Game extends Scene {
     return 'Your secret role is being prepared.';
   }
 
-  private renderPromptState(prompt: PlayerPromptState | null): void {
+  private renderPromptState(prompt: PlayerSecretWord | null): void {
     this.currentPrompt = prompt;
     if (!this.lobby || this.lobby.gameState !== 'IN_PROGRESS' || !this.lobby.hasJoined) return;
     if (!prompt) {
@@ -303,7 +297,7 @@ export class Game extends Scene {
       return;
     }
     this.promptText?.setText(`Your Secret Word\n\n${prompt.secretWord}`).setVisible(true);
-    this.promptHintText?.setText('Describe your word without saying it directly.').setVisible(true);
+    this.promptHintText?.setText('Describe your word without saying it directly.\nUse the Reddit comments to convince other players.').setVisible(true);
   }
 
   private getPromptMessage(): string {
@@ -341,7 +335,7 @@ export class Game extends Scene {
 
   private getVotingSummary(): string {
     if (!this.votingState) return '';
-    if (this.votingState.gameState === 'RESULTS') return '';
+    if (this.votingState.gameState === 'RESULTS') return this.getResultsSummary();
     const selectedVote = this.votingState.selectedTarget ? `Selected vote: u/${this.votingState.selectedTarget}` : 'Select one alive player.';
     const timerText = this.votingState.votingEndsAt ? `Voting ends ${this.formatCountdown(this.votingState.votingEndsAt)}` : 'Voting is open.';
     return `Voting phase\n${timerText}\n${selectedVote}`;
@@ -353,7 +347,7 @@ export class Game extends Scene {
   }
 
   private getVoteRejectionMessage(result: SubmitVoteResult): string {
-    if (result.reason === 'already_submitted') return 'That vote is already selected.';
+    if (result.reason === 'already_submitted') return 'You already voted and cannot change it.';
     if (result.reason === 'self_vote') return 'You cannot vote for yourself.';
     if (result.reason === 'target_not_alive') return 'That player is not alive.';
     if (result.reason === 'not_alive') return 'Eliminated players cannot vote.';
@@ -363,6 +357,15 @@ export class Game extends Scene {
 
   private formatCountdown(endsAt: string): string {
     return `in ${Math.ceil(Math.max(new Date(endsAt).getTime() - Date.now(), 0) / 1000)}s`;
+  }
+
+  private getResultsSummary(): string {
+    if (!this.votingState) return '';
+    const eliminated = this.votingState.eliminatedUsername ? `Eliminated: u/${this.votingState.eliminatedUsername}` : 'Nobody was eliminated.';
+    const role = this.votingState.eliminatedRole ? `Role: ${this.votingState.eliminatedRole === 'IMPOSTOR' ? 'Impostor' : 'Villager'}` : '';
+    const winner = this.votingState.eliminatedRole === 'IMPOSTOR' ? 'Villagers win!' : 'Impostor wins!';
+    const countdown = this.votingState.resultsEndsAt ? `Next game begins ${this.formatCountdown(this.votingState.resultsEndsAt)}` : 'Preparing the next game...';
+    return [eliminated, role, winner, countdown].filter((line) => line.length > 0).join('\n');
   }
 
   private getScaleFactor(): number {

@@ -1,5 +1,4 @@
 import type { GameState } from './gameState';
-import type { PromptPair } from './prompt';
 import type { Role } from './role';
 
 export type LobbyPlayer = {
@@ -16,7 +15,6 @@ export type LobbyState = {
   maxPlayers: number;
   currentUsername: string;
   hasJoined: boolean;
-  prompt: PromptPair | null;
   completedGame: CompletedGame | null;
 };
 
